@@ -999,7 +999,7 @@ _TG_DEFAULT = pd.DataFrame({
     "成交量標記": ["放量","縮量","放量","放量","縮量"],
     "K線形態":    ["大陽線","普通K線","大陽線","射擊之星","看漲吞噬"],
     "回測勝率":   ["N/A","N/A","N/A","N/A","N/A"],
-    "方向":       ["","","","",""],
+    "方向":       ["做多","做多","做多","做多","做多"],
 })
 if "tg_conds" not in st.session_state:
     st.session_state["tg_conds"] = _TG_DEFAULT.copy()
@@ -1319,12 +1319,32 @@ for tab_idx, ticker in enumerate(selected_tickers):
             K_list = [s.strip() for s in K_str.split(", ") if s.strip()]
 
             # ── Selected-signal push (user-chosen signals) ────────────────
+            # 先建立「信號 → 方向」查找表（從條件表讀取）
+            _live_tg_p1 = st.session_state.get("tg_conds", telegram_conditions)
+            _sig_dir_map: dict = {}   # sig_str → "做多" | "做空" | ""
+            for _, _p1_row in _live_tg_p1.iterrows():
+                _p1_marks = str(_p1_row.get("異動標記", ""))
+                _p1_dir   = str(_p1_row.get("方向", "")).strip()
+                if _p1_dir not in ("做多", "做空"):
+                    continue
+                for _p1_sig in _p1_marks.split(","):
+                    _s = _p1_sig.strip()
+                    if _s and _s not in _sig_dir_map:
+                        _sig_dir_map[_s] = _p1_dir
+
             for sig in selected_signals:
                 if sig in K_list:
+                    # 方向優先從條件表讀取，否則從 SELL_SIGNALS 推斷
+                    _p1_dir_val = _sig_dir_map.get(sig, "")
+                    if not _p1_dir_val:
+                        _p1_dir_val = "做空" if sig in SELL_SIGNALS else "做多"
+                    _p1_dir_label = "🔴 做空（賣出）" if _p1_dir_val == "做空" else "🟢 做多（買入）"
+
                     _msg = (
                         f"📡 信號提醒\n"
                         f"股票：{ticker} ({selected_interval})\n"
                         f"信號：{sig}\n"
+                        f"操作方向：{_p1_dir_label}\n"
                         f"價格：${cur_price:.2f}\n"
                         f"RSI：{data['RSI'].iloc[-1]:.1f}  MACD：{data['MACD'].iloc[-1]:.3f}\n"
                         f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  "
@@ -1332,7 +1352,7 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     )
                     _ok, _err = send_telegram_alert(_msg)
                     if _ok:
-                        st.toast(f"📡 Telegram 已推送：{sig}", icon="✅")
+                        st.toast(f"📡 Telegram 已推送：{sig} ({_p1_dir_label})", icon="✅")
                     else:
                         st.warning(f"⚠️ Telegram 推送失敗（{sig}）：{_err}")
 
