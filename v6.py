@@ -999,9 +999,13 @@ _TG_DEFAULT = pd.DataFrame({
     "成交量標記": ["放量","縮量","放量","放量","縮量"],
     "K線形態":    ["大陽線","普通K線","大陽線","射擊之星","看漲吞噬"],
     "回測勝率":   ["N/A","N/A","N/A","N/A","N/A"],
+    "方向":       ["","","","",""],
 })
 if "tg_conds" not in st.session_state:
     st.session_state["tg_conds"] = _TG_DEFAULT.copy()
+elif "方向" not in st.session_state["tg_conds"].columns:
+    # 向後相容：舊版 session_state 沒有方向欄，補上預設值「做多」
+    st.session_state["tg_conds"]["方向"] = ""
 
 telegram_conditions = st.data_editor(
     st.session_state["tg_conds"],
@@ -1015,6 +1019,9 @@ telegram_conditions = st.data_editor(
         "K線形態":    st.column_config.TextColumn("K線形態", width="medium"),
         "回測勝率":   st.column_config.TextColumn("回測勝率", width="small",
                         help="由回測一鍵加入時自動填入"),
+        "方向":       st.column_config.SelectboxColumn("方向",
+                        options=["做多","做空"], width="small",
+                        help="做多=買入訊號，做空=賣出訊號；一鍵加入時自動帶入"),
     },
     use_container_width=True,
 )
@@ -1378,7 +1385,8 @@ for tab_idx, ticker in enumerate(selected_tickers):
             _rsi_icon = "🔥" if _rsi_val > 70 else ("🧊" if _rsi_val < 30 else "⚪")
             _vol_icon = "📈" if _cur_vol == "放量" else "📉"
 
-            def _build_tg_msg(rank: str, backtest_wr: str, match_no: int, total_matches: int) -> str:
+            def _build_tg_msg(rank: str, backtest_wr: str, match_no: int, total_matches: int,
+                             direction: str = "做多") -> str:
                 """組裝單條 Telegram 訊息，match_no/total_matches 用於全部比對模式的序號顯示。"""
                 _header = (
                     f"{'='*28}\n"
@@ -1409,11 +1417,18 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     _lines.append(f"  {_s}")
                 if len(K_list) > 12:
                     _lines.append(f"  ... 共 {len(K_list)} 個信號")
+                if direction == "做多":
+                    _dir_label = "🟢 做多（買入）"
+                elif direction == "做空":
+                    _dir_label = "🔴 做空（賣出）"
+                else:
+                    _dir_label = "未設定（請在條件表填寫）"
                 _lines += [
                     "",
                     "--- 匹配條件 ---",
                     f"條件排名  : #{rank}",
                     f"回測勝率  : {backtest_wr}",
+                    f"方向      : {_dir_label}",
                     f"{'='*28}",
                 ]
                 return "\n".join(_lines)
@@ -1440,7 +1455,9 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     _rank     = _rank_raw if _rank_raw else f"#{_ci + 1}"
                     _wr_raw   = _safe_str(cond_row.get("回測勝率", ""))
                     _wr       = _wr_raw if _wr_raw else "N/A"
-                    _matched_list.append((_rank, _wr, _ci))
+                    _dir_raw  = _safe_str(cond_row.get("方向", ""))
+                    _dir      = _dir_raw if _dir_raw in ("做多", "做空") else ""
+                    _matched_list.append((_rank, _wr, _ci, _dir))
 
                     if not _scan_all:
                         break   # 第一個匹配模式：找到就停
@@ -1454,16 +1471,25 @@ for tab_idx, ticker in enumerate(selected_tickers):
             else:
                 # UI 摘要欄
                 if _total_matched == 1:
-                    _rank0, _wr0, _ = _matched_list[0]
+                    _rank0, _wr0, _, _dir0 = _matched_list[0]
+                    _dir0_label = ("🟢 做多" if _dir0 == "做多"
+                                   else "🔴 做空" if _dir0 == "做空"
+                                   else "未設定")
                     st.info(
-                        f"🎯 **條件匹配！** 排名 {_rank0}，回測勝率 {_wr0}\n\n"
+                        f"🎯 **條件匹配！** 排名 {_rank0}，回測勝率 {_wr0}，"
+                        f"方向 {_dir0_label}\n\n"
                         f"信號：{K_str[:120]}\n"
                         f"成交量：{_cur_vol}  K線：{_cur_kline}",
                     )
                 else:
-                    _ranks_str = "、".join(r for r, _, __ in _matched_list)
+                    _ranks_str = "、".join(r for r, _, __, ___ in _matched_list)
+                    _dirs_str = "、".join(
+                        ("🟢" if d=="做多" else "🔴" if d=="做空" else "—")
+                        for _,_,__,d in _matched_list
+                    )
                     st.info(
                         f"🎯 **共匹配 {_total_matched} 條條件！** 排名：{_ranks_str}\n\n"
+                        f"方向：{_dirs_str}\n"
                         f"信號：{K_str[:120]}\n"
                         f"成交量：{_cur_vol}  K線：{_cur_kline}",
                     )
@@ -1472,10 +1498,11 @@ for tab_idx, ticker in enumerate(selected_tickers):
                 _send_ok_count  = 0
                 _send_err_msgs  = []
 
-                for _mn, (_rank, _wr, _ci) in enumerate(_matched_list, start=1):
+                for _mn, (_rank, _wr, _ci, _dir) in enumerate(_matched_list, start=1):
                     _msg = _build_tg_msg(
                         rank=_rank, backtest_wr=_wr,
                         match_no=_mn, total_matches=_total_matched,
+                        direction=_dir,
                     )
                     _ok, _err = send_telegram_alert(_msg)
                     if _ok:
@@ -1493,9 +1520,10 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     st.success(
                         f"📨 **Telegram 全部發送成功！** "
                         f"共 {_send_ok_count} 條訊息"
-                        + (f"（排名 {', '.join(r for r,_,__ in _matched_list)}）"
+                        + (f"（排名 {', '.join(r for r,_,__,___ in _matched_list)}）"
                            if _total_matched > 1 else
-                           f"（排名 {_matched_list[0][0]}，回測勝率 {_matched_list[0][1]}）"),
+                           f"（排名 {_matched_list[0][0]}，回測勝率 {_matched_list[0][1]}，"
+                           f"方向 {'🟢 做多' if _matched_list[0][3]=='做多' else '🔴 做空' if _matched_list[0][3]=='做空' else '未設定'}）"),
                         icon="✅",
                     )
                 elif _send_ok_count > 0 and _send_err_msgs:
@@ -1524,7 +1552,8 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     f"🚀 突破新高提醒\n"
                     f"股票：{ticker} ({selected_interval})\n"
                     f"現價 ${data['High'].iloc[-1]:.2f} 創 {W} 根K線新高\n"
-                    f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  ({_cur_vol})"
+                    f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  ({_cur_vol})\n"
+                    f"方向：🟢 做多（買入）"
                 )
                 _ok, _err = send_telegram_alert(_bo_msg)
                 if _ok:
@@ -1537,7 +1566,8 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     f"🔻 跌破新低提醒\n"
                     f"股票：{ticker} ({selected_interval})\n"
                     f"現價 ${data['Low'].iloc[-1]:.2f} 創 {W} 根K線新低\n"
-                    f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  ({_cur_vol})"
+                    f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  ({_cur_vol})\n"
+                    f"方向：🔴 做空（賣出）"
                 )
                 _ok, _err = send_telegram_alert(_bd_msg)
                 if _ok:
@@ -2103,6 +2133,7 @@ with tabs[-1]:
                     "成交量標記": "—" if vol == "—" else vol,
                     "K線形態":    kl,
                     "回測勝率":   f"{row['勝率(%)']:.1f}%",
+                    "方向":       row.get("方向", "做多"),
                 })
             new_df = pd.DataFrame(new_rows)
 
@@ -2122,8 +2153,10 @@ with tabs[-1]:
             combined = combined.reset_index(drop=True)
             combined["排名"] = [str(i+1) for i in range(len(combined))]
 
+            if "方向" not in combined.columns:
+                combined["方向"] = ""
             st.session_state["tg_conds"] = combined[
-                ["排名","異動標記","成交量標記","K線形態","回測勝率"]]
+                ["排名","異動標記","成交量標記","K線形態","回測勝率","方向"]]
 
             added = len(combined) - len(
                 existing.drop_duplicates(subset=["異動標記","成交量標記","K線形態"]))
@@ -2220,6 +2253,7 @@ with tabs[-1]:
                         "成交量標記": "—",
                         "K線形態":    "—",
                         "回測勝率":   f"{r['勝率(%)']:.1f}%",
+                        "方向":       r.get("方向", "做多"),
                         "_wr_num":    r["勝率(%)"],
                     })
             # 維度二：信號 + 成交量
@@ -2230,6 +2264,7 @@ with tabs[-1]:
                         "成交量標記": r.get("成交量標記", "—"),
                         "K線形態":    "—",
                         "回測勝率":   f"{r['勝率(%)']:.1f}%",
+                        "方向":       r.get("方向", "做多"),
                         "_wr_num":    r["勝率(%)"],
                     })
             # 維度三：信號 + K線形態
@@ -2240,6 +2275,7 @@ with tabs[-1]:
                         "成交量標記": "—",
                         "K線形態":    r.get("K線形態", "—"),
                         "回測勝率":   f"{r['勝率(%)']:.1f}%",
+                        "方向":       r.get("方向", "做多"),
                         "_wr_num":    r["勝率(%)"],
                     })
             if not rows:
@@ -2252,7 +2288,9 @@ with tabs[-1]:
                 .reset_index(drop=True)
             )
             merged["排名"] = [str(i + 1) for i in range(len(merged))]
-            return merged[["排名","異動標記","成交量標記","K線形態","回測勝率"]]
+            if "方向" not in merged.columns:
+                merged["方向"] = ""
+            return merged[["排名","異動標記","成交量標記","K線形態","回測勝率","方向"]]
 
         _preview_df = _preview_merge(float(_merge_thr))
         _n_preview  = len(_preview_df)
