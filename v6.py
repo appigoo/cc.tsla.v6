@@ -314,47 +314,95 @@ def send_email_alert(ticker: str, price_pct: float, volume_pct: float, active_si
 #  BACKTEST: combination win-rate
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _calc_wr(sub: "pd.DataFrame", is_sell: bool) -> float:
-    """Helper: win rate for a subset."""
-    if len(sub) == 0:
+def _calc_wr(sub_next_up: "np.ndarray", is_sell: bool) -> float:
+    """
+    Helper: compute win rate from a boolean array of next-bar direction.
+    Accepts either a pd.Series or np.ndarray for sub["_next_up"].
+    """
+    n = len(sub_next_up)
+    if n == 0:
         return 0.0
-    return (1 - sub["_next_up"].mean()) * 100 if is_sell else sub["_next_up"].mean() * 100
+    mean_up = float(np.asarray(sub_next_up, dtype=float).mean())
+    return (1 - mean_up) * 100 if is_sell else mean_up * 100
 
 
-def _base_signal_combos(df: "pd.DataFrame", min_combo: int, max_combo: int,
-                         min_occ: int) -> "pd.DataFrame":
+def _build_onehot(df: "pd.DataFrame") -> "tuple[list, dict, np.ndarray]":
     """
-    維度 1：純信號組合勝率
-    回傳欄位：信號組合, 信號數量, 勝率(%), 出現次數, 方向
+    共用前置步驟：
+    1. 解析每行異動標記 → signal_sets (list of set)
+    2. 收集所有不重複信號 → all_s (sorted list)
+    3. 建立 one-hot 布林矩陣 onehot (n_rows × n_signals, dtype=bool)
+
+    one-hot[i, j] = True 表示第 i 根K線包含第 j 個信號。
+
+    向量化篩選：
+        mask = onehot[:, [col_A, col_B]].all(axis=1)
+    等價於原本的：
+        mask = df["_sigs"].apply(lambda s: {A, B}.issubset(s))
+    但速度快 10～50 倍（純 NumPy，無 Python 逐行循環）。
     """
-    df = df.copy()
-    df["_next_up"] = df["Close"].shift(-1) > df["Close"]
     signal_sets = []
     for marks in df["異動標記"].fillna(""):
         sigs = {s.strip() for s in str(marks).split(", ")
                 if s.strip() and "🔥" not in s}
         signal_sets.append(sigs)
-    df["_sigs"] = signal_sets
-    all_s = sorted({s for ss in signal_sets for s in ss})
+
+    all_s     = sorted({s for ss in signal_sets for s in ss})
+    sig_index = {s: i for i, s in enumerate(all_s)}
+    n_sigs    = len(all_s)
+    n_rows    = len(df)
+
+    onehot = np.zeros((n_rows, n_sigs), dtype=bool)
+    for row_i, sset in enumerate(signal_sets):
+        for s in sset:
+            if s in sig_index:
+                onehot[row_i, sig_index[s]] = True
+
+    return all_s, sig_index, onehot
+
+
+def _combo_mask(combo: tuple, sig_index: dict,
+                onehot: "np.ndarray") -> "np.ndarray":
+    """
+    給定一個信號組合 tuple，回傳 shape=(n_rows,) 的布林陣列。
+    True 表示該行K線包含組合中的所有信號。
+    完全等價於：df["_sigs"].apply(lambda s: set(combo).issubset(s))
+    """
+    cols = [sig_index[s] for s in combo if s in sig_index]
+    if not cols:
+        return np.zeros(onehot.shape[0], dtype=bool)
+    # np.ndarray[:, cols].all(axis=1) — 純 NumPy，無 Python 逐行循環
+    return onehot[:, cols].all(axis=1)
+
+
+def _base_signal_combos(df: "pd.DataFrame", min_combo: int, max_combo: int,
+                         min_occ: int) -> "pd.DataFrame":
+    """
+    維度 1：純信號組合勝率（向量化加速版）
+    回傳欄位：維度, 信號組合, 成交量標記, K線形態, 信號數量, 勝率(%), 出現次數, 方向
+    """
+    df = df.copy()
+    next_up = (df["Close"].shift(-1) > df["Close"]).to_numpy()
+
+    all_s, sig_index, onehot = _build_onehot(df)
 
     rows = []
     for r in range(min_combo, min(max_combo + 1, len(all_s) + 1)):
         for combo in combinations(all_s, r):
-            cs = set(combo)
-            mask = df["_sigs"].apply(lambda s: cs.issubset(s))
-            sub  = df[mask]
-            if len(sub) < min_occ:
+            mask    = _combo_mask(combo, sig_index, onehot)
+            n_hit   = int(mask.sum())
+            if n_hit < min_occ:
                 continue
             is_sell = sum(1 for s in combo if s in SELL_SIGNALS) > len(combo) / 2
             rows.append({
-                "維度":     "信號組合",
-                "信號組合": " + ".join(combo),
+                "維度":       "信號組合",
+                "信號組合":   " + ".join(combo),
                 "成交量標記": "—",
-                "K線形態":  "—",
-                "信號數量": r,
-                "勝率(%)":  round(_calc_wr(sub, is_sell), 1),
-                "出現次數": len(sub),
-                "方向":     "做空" if is_sell else "做多",
+                "K線形態":    "—",
+                "信號數量":   r,
+                "勝率(%)":    round(_calc_wr(next_up[mask], is_sell), 1),
+                "出現次數":   n_hit,
+                "方向":       "做空" if is_sell else "做多",
             })
     if not rows:
         return pd.DataFrame()
@@ -364,43 +412,40 @@ def _base_signal_combos(df: "pd.DataFrame", min_combo: int, max_combo: int,
 def _signal_x_volume_combos(df: "pd.DataFrame", min_combo: int, max_combo: int,
                               min_occ: int) -> "pd.DataFrame":
     """
-    維度 2：信號組合 × 成交量標記（放量 / 縮量）
-    回傳欄位同上，成交量標記填實際值
+    維度 2：信號組合 × 成交量標記（向量化加速版）
     """
     if "成交量標記" not in df.columns:
         return pd.DataFrame()
     df = df.copy()
-    df["_next_up"] = df["Close"].shift(-1) > df["Close"]
-    signal_sets = []
-    for marks in df["異動標記"].fillna(""):
-        sigs = {s.strip() for s in str(marks).split(", ")
-                if s.strip() and "🔥" not in s}
-        signal_sets.append(sigs)
-    df["_sigs"] = signal_sets
-    all_s = sorted({s for ss in signal_sets for s in ss})
+    next_up  = (df["Close"].shift(-1) > df["Close"]).to_numpy()
+    vol_arr  = df["成交量標記"].to_numpy()          # shape (n_rows,)
+    vol_放量 = (vol_arr == "放量")                  # boolean mask
+    vol_縮量 = (vol_arr == "縮量")
+
+    all_s, sig_index, onehot = _build_onehot(df)
 
     rows = []
     for r in range(min_combo, min(max_combo + 1, len(all_s) + 1)):
         for combo in combinations(all_s, r):
-            cs = set(combo)
-            base_mask = df["_sigs"].apply(lambda s: cs.issubset(s))
-            base_sub  = df[base_mask]
-            if len(base_sub) < min_occ:
+            base_mask = _combo_mask(combo, sig_index, onehot)
+            n_base    = int(base_mask.sum())
+            if n_base < min_occ:
                 continue
             is_sell = sum(1 for s in combo if s in SELL_SIGNALS) > len(combo) / 2
-            for vol_label in ["放量", "縮量"]:
-                sub = base_sub[base_sub["成交量標記"] == vol_label]
-                if len(sub) < min_occ:
+            for vol_label, vol_mask in [("放量", vol_放量), ("縮量", vol_縮量)]:
+                mask  = base_mask & vol_mask
+                n_hit = int(mask.sum())
+                if n_hit < min_occ:
                     continue
                 rows.append({
-                    "維度":     "信號+成交量",
-                    "信號組合": " + ".join(combo),
+                    "維度":       "信號+成交量",
+                    "信號組合":   " + ".join(combo),
                     "成交量標記": vol_label,
-                    "K線形態":  "—",
-                    "信號數量": r,
-                    "勝率(%)":  round(_calc_wr(sub, is_sell), 1),
-                    "出現次數": len(sub),
-                    "方向":     "做空" if is_sell else "做多",
+                    "K線形態":    "—",
+                    "信號數量":   r,
+                    "勝率(%)":    round(_calc_wr(next_up[mask], is_sell), 1),
+                    "出現次數":   n_hit,
+                    "方向":       "做空" if is_sell else "做多",
                 })
     if not rows:
         return pd.DataFrame()
@@ -410,44 +455,43 @@ def _signal_x_volume_combos(df: "pd.DataFrame", min_combo: int, max_combo: int,
 def _signal_x_kline_combos(df: "pd.DataFrame", min_combo: int, max_combo: int,
                              min_occ: int) -> "pd.DataFrame":
     """
-    維度 3：信號組合 × K線形態
-    回傳欄位同上，K線形態填實際值
+    維度 3：信號組合 × K線形態（向量化加速版）
     """
     if "K線形態" not in df.columns:
         return pd.DataFrame()
     df = df.copy()
-    df["_next_up"] = df["Close"].shift(-1) > df["Close"]
-    signal_sets = []
-    for marks in df["異動標記"].fillna(""):
-        sigs = {s.strip() for s in str(marks).split(", ")
-                if s.strip() and "🔥" not in s}
-        signal_sets.append(sigs)
-    df["_sigs"] = signal_sets
-    all_s = sorted({s for ss in signal_sets for s in ss})
-    kline_vals = [k for k in df["K線形態"].dropna().unique() if k and k != "普通K線"]
+    next_up    = (df["Close"].shift(-1) > df["Close"]).to_numpy()
+    kline_arr  = df["K線形態"].fillna("普通K線").to_numpy()
+    kline_vals = [k for k in df["K線形態"].dropna().unique()
+                  if k and k != "普通K線"]
+
+    # 預建每種K線形態的布林遮罩，避免在內層迴圈重複比較
+    kline_masks = {kl: (kline_arr == kl) for kl in kline_vals}
+
+    all_s, sig_index, onehot = _build_onehot(df)
 
     rows = []
     for r in range(min_combo, min(max_combo + 1, len(all_s) + 1)):
         for combo in combinations(all_s, r):
-            cs = set(combo)
-            base_mask = df["_sigs"].apply(lambda s: cs.issubset(s))
-            base_sub  = df[base_mask]
-            if len(base_sub) < min_occ:
+            base_mask = _combo_mask(combo, sig_index, onehot)
+            n_base    = int(base_mask.sum())
+            if n_base < min_occ:
                 continue
             is_sell = sum(1 for s in combo if s in SELL_SIGNALS) > len(combo) / 2
-            for kl in kline_vals:
-                sub = base_sub[base_sub["K線形態"] == kl]
-                if len(sub) < min_occ:
+            for kl, kl_mask in kline_masks.items():
+                mask  = base_mask & kl_mask
+                n_hit = int(mask.sum())
+                if n_hit < min_occ:
                     continue
                 rows.append({
-                    "維度":     "信號+K線形態",
-                    "信號組合": " + ".join(combo),
+                    "維度":       "信號+K線形態",
+                    "信號組合":   " + ".join(combo),
                     "成交量標記": "—",
-                    "K線形態":  kl,
-                    "信號數量": r,
-                    "勝率(%)":  round(_calc_wr(sub, is_sell), 1),
-                    "出現次數": len(sub),
-                    "方向":     "做空" if is_sell else "做多",
+                    "K線形態":    kl,
+                    "信號數量":   r,
+                    "勝率(%)":    round(_calc_wr(next_up[mask], is_sell), 1),
+                    "出現次數":   n_hit,
+                    "方向":       "做空" if is_sell else "做多",
                 })
     if not rows:
         return pd.DataFrame()
