@@ -1418,11 +1418,14 @@ for tab_idx, ticker in enumerate(selected_tickers):
                         f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  "
                         f"({data['成交量標記'].iloc[-1]})"
                     )
-                    _ok, _err = send_telegram_alert(_msg)
-                    if _ok:
-                        st.toast(f"📡 Telegram 已推送：{sig} ({_p1_dir_label})", icon="✅")
+                    if st.session_state.get("tg_enabled", True):
+                        _ok, _err = send_telegram_alert(_msg)
+                        if _ok:
+                            st.toast(f"📡 Telegram 已推送：{sig} ({_p1_dir_label})", icon="✅")
+                        else:
+                            st.warning(f"⚠️ Telegram 推送失敗（{sig}）：{_err}")
                     else:
-                        st.warning(f"⚠️ Telegram 推送失敗（{sig}）：{_err}")
+                        st.toast(f"🔕 {sig} 已匹配，Telegram 已關閉", icon="🔕")
 
             # ── Condition matching ─────────────────────────────────────────
             def _safe_str(v) -> str:
