@@ -1843,7 +1843,7 @@ with tabs[-1]:
             if not hi.empty:
                 disp_cols = [c for c in col_order if c in hi.columns]
                 st.dataframe(
-                    hi[disp_cols].style.background_gradient(subset=["勝率(%)"], cmap="Greens"),
+                    hi[disp_cols].style.background_gradient(subset=["勝率(%)"], cmap="Greens", gmap=hi["勝率(%)"].apply(pd.to_numeric, errors="coerce")),
                     use_container_width=True,
                     height=min(400, 38 * (len(hi) + 1) + 40),
                 )
@@ -2058,7 +2058,7 @@ with tabs[-1]:
             with st.expander(f"📊 {title} 全部 {total} 組（展開查看）"):
                 disp_all = [c for c in col_order if c in df_dim.columns]
                 st.dataframe(
-                    df_dim[disp_all].style.background_gradient(subset=["勝率(%)"], cmap="RdYlGn"),
+                    df_dim[disp_all].style.background_gradient(subset=["勝率(%)"], cmap="RdYlGn", gmap=df_dim["勝率(%)"].apply(pd.to_numeric, errors="coerce")),
                     use_container_width=True, height=420,
                 )
 
@@ -2285,6 +2285,7 @@ with tabs[-1]:
                     _preview_df.style.background_gradient(
                         subset=["回測勝率"],
                         cmap="Greens",
+                        gmap=_preview_df["回測勝率"].str.replace("%","",regex=False).apply(pd.to_numeric,errors="coerce"),
                     ),
                     use_container_width=True,
                     height=min(500, 38 * (_n_preview + 1) + 40),
