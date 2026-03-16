@@ -1025,6 +1025,30 @@ ALL_SIGNAL_TYPES = sorted([
     "📈 VIX平靜買入","📈 VIX下降趨勢買入","✅ 量價","🔄 新转折点",
 ] + list(SELL_SIGNALS))
 
+# ── Telegram 發送開關 ────────────────────────────────────────────────────────
+if "tg_enabled" not in st.session_state:
+    st.session_state["tg_enabled"] = True   # 預設開啟
+
+_sw_col, _sw_info = st.columns([1, 5])
+with _sw_col:
+    _sw_label = (
+        "🟢 Telegram：開啟" if st.session_state["tg_enabled"]
+        else "🔴 Telegram：已關閉"
+    )
+    if st.button(_sw_label, key="tg_toggle_btn", use_container_width=True):
+        st.session_state["tg_enabled"] = not st.session_state["tg_enabled"]
+        st.rerun()
+with _sw_info:
+    if st.session_state["tg_enabled"]:
+        st.success("🟢 **Telegram 發送開啟**：條件匹配時自動推送訊號", icon="✅")
+    else:
+        st.warning(
+            "🔴 **Telegram 已關閉（調參模式）**：條件匹配時只顯示 UI 提示，不發送任何訊息。"
+            "完成調參後請重新開啟。",
+            icon="🔕",
+        )
+
+
 selected_signals = st.multiselect("選擇需要 Telegram 推播的信號",
                                    ALL_SIGNAL_TYPES, default=["📈 新买入信号"])
 
@@ -1564,56 +1588,69 @@ for tab_idx, ticker in enumerate(selected_tickers):
                 # 逐一發送每條匹配訊息
                 _send_ok_count  = 0
                 _send_err_msgs  = []
+                _tg_on = st.session_state.get("tg_enabled", True)
 
-                for _mn, (_rank, _wr, _ci, _dir) in enumerate(_matched_list, start=1):
-                    _msg = _build_tg_msg(
-                        rank=_rank, backtest_wr=_wr,
-                        match_no=_mn, total_matches=_total_matched,
-                        direction=_dir,
-                    )
-                    _ok, _err = send_telegram_alert(_msg)
-                    if _ok:
-                        _send_ok_count += 1
-                        st.toast(
-                            f"✅ {ticker} 條件 #{_rank} 匹配，Telegram 已推送"
-                            + (f"（{_mn}/{_total_matched}）" if _total_matched > 1 else ""),
-                            icon="📨",
-                        )
-                    else:
-                        _send_err_msgs.append(f"排名 {_rank}：{_err}")
-
-                # 統一顯示發送結果
-                if _send_ok_count > 0 and not _send_err_msgs:
-                    st.success(
-                        f"📨 **Telegram 全部發送成功！** "
-                        f"共 {_send_ok_count} 條訊息"
-                        + (f"（排名 {', '.join(r for r,_,__,___ in _matched_list)}）"
-                           if _total_matched > 1 else
-                           f"（排名 {_matched_list[0][0]}，回測勝率 {_matched_list[0][1]}，"
-                           f"方向 {'🟢 做多' if _matched_list[0][3]=='做多' else '🔴 做空' if _matched_list[0][3]=='做空' else '未設定'}）"),
-                        icon="✅",
-                    )
-                elif _send_ok_count > 0 and _send_err_msgs:
+                if not _tg_on:
+                    # 開關關閉：靜默，只顯示 UI 提示
+                    _ranks_muted = "、".join(r for r,_,__,___ in _matched_list)
                     st.warning(
-                        f"⚠️ 部分發送成功（{_send_ok_count}/{_total_matched}）。\n"
-                        + "\n".join(_send_err_msgs),
+                        f"🔕 **Telegram 已關閉**，訊息未發送。\n"
+                        f"匹配條件：排名 {_ranks_muted}（共 {_total_matched} 條）。\n"
+                        f"完成調參後請點擊頂部「🔴 Telegram：已關閉」按鈕重新開啟。",
+                        icon="🔕",
                     )
                 else:
-                    # All failed
-                    if not (BOT_TOKEN and CHAT_ID):
+                    for _mn, (_rank, _wr, _ci, _dir) in enumerate(_matched_list, start=1):
+                        _msg = _build_tg_msg(
+                            rank=_rank, backtest_wr=_wr,
+                            match_no=_mn, total_matches=_total_matched,
+                            direction=_dir,
+                        )
+                        _ok, _err = send_telegram_alert(_msg)
+                        if _ok:
+                            _send_ok_count += 1
+                            st.toast(
+                                f"✅ {ticker} 條件 #{_rank} 匹配，Telegram 已推送"
+                                + (f"（{_mn}/{_total_matched}）" if _total_matched > 1 else ""),
+                                icon="📨",
+                            )
+                        else:
+                            _send_err_msgs.append(f"排名 {_rank}：{_err}")
+
+                    # 統一顯示發送結果
+                    if _send_ok_count > 0 and not _send_err_msgs:
+                        st.success(
+                            f"📨 **Telegram 全部發送成功！** "
+                            f"共 {_send_ok_count} 條訊息"
+                            + (f"（排名 {', '.join(r for r,_,__,___ in _matched_list)}）"
+                               if _total_matched > 1 else
+                               f"（排名 {_matched_list[0][0]}，回測勝率 {_matched_list[0][1]}，"
+                               f"方向 {'🟢 做多' if _matched_list[0][3]=='做多' else '🔴 做空' if _matched_list[0][3]=='做空' else '未設定'}）"),
+                            icon="✅",
+                        )
+                    elif _send_ok_count > 0 and _send_err_msgs:
                         st.warning(
-                            f"⚠️ 條件已匹配（{_total_matched} 條）但 **Telegram 未設定**，訊息未發送。\n\n"
-                            f"請在 `.streamlit/secrets.toml` 中設定 `BOT_TOKEN` 和 `CHAT_ID`。",
-                            icon="⚙️",
+                            f"⚠️ 部分發送成功（{_send_ok_count}/{_total_matched}）。\n"
+                            + "\n".join(_send_err_msgs),
                         )
                     else:
-                        st.error(
-                            f"❌ **Telegram 全部發送失敗**（已匹配 {_total_matched} 條）：\n"
-                            + "\n".join(_send_err_msgs),
-                            icon="🚨",
-                        )
+                        if not (BOT_TOKEN and CHAT_ID):
+                            st.warning(
+                                f"⚠️ 條件已匹配（{_total_matched} 條）但 **Telegram 未設定**，訊息未發送。\n\n"
+                                f"請在 `.streamlit/secrets.toml` 中設定 `BOT_TOKEN` 和 `CHAT_ID`。",
+                                icon="⚙️",
+                            )
+                        else:
+                            st.error(
+                                f"❌ **Telegram 全部發送失敗**（已匹配 {_total_matched} 條）：\n"
+                                + "\n".join(_send_err_msgs),
+                                icon="🚨",
+                            )
+
 
             # ── Breakout / Breakdown alerts ────────────────────────────────
+            _tg_on_bo = st.session_state.get("tg_enabled", True)
+
             if pd.notna(data["High_Max"].iloc[-1]) and data["High"].iloc[-1] >= data["High_Max"].iloc[-1]:
                 _bo_msg = (
                     f"🚀 突破新高提醒\n"
@@ -1622,11 +1659,14 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  ({_cur_vol})\n"
                     f"方向：🟢 做多（買入）"
                 )
-                _ok, _err = send_telegram_alert(_bo_msg)
-                if _ok:
-                    st.toast(f"🚀 {ticker} 破 {W}K 新高，Telegram 已推送", icon="🚀")
+                if _tg_on_bo:
+                    _ok, _err = send_telegram_alert(_bo_msg)
+                    if _ok:
+                        st.toast(f"🚀 {ticker} 破 {W}K 新高，Telegram 已推送", icon="🚀")
+                    else:
+                        st.warning(f"⚠️ {ticker} 突破新高 Telegram 推送失敗：{_err}")
                 else:
-                    st.warning(f"⚠️ {ticker} 突破新高 Telegram 推送失敗：{_err}")
+                    st.toast(f"🔕 {ticker} 破 {W}K 新高（Telegram 已關閉）", icon="🔕")
 
             if pd.notna(data["Low_Min"].iloc[-1]) and data["Low"].iloc[-1] <= data["Low_Min"].iloc[-1]:
                 _bd_msg = (
@@ -1636,11 +1676,15 @@ for tab_idx, ticker in enumerate(selected_tickers):
                     f"成交量：{_fmt_vol(data['Volume'].iloc[-1])}  ({_cur_vol})\n"
                     f"方向：🔴 做空（賣出）"
                 )
-                _ok, _err = send_telegram_alert(_bd_msg)
-                if _ok:
-                    st.toast(f"🔻 {ticker} 穿 {W}K 新低，Telegram 已推送", icon="🔻")
+                if _tg_on_bo:
+                    _ok, _err = send_telegram_alert(_bd_msg)
+                    if _ok:
+                        st.toast(f"🔻 {ticker} 穿 {W}K 新低，Telegram 已推送", icon="🔻")
+                    else:
+                        st.warning(f"⚠️ {ticker} 跌破新低 Telegram 推送失敗：{_err}")
                 else:
-                    st.warning(f"⚠️ {ticker} 跌破新低 Telegram 推送失敗：{_err}")
+                    st.toast(f"🔕 {ticker} 穿 {W}K 新低（Telegram 已關閉）", icon="🔕")
+
 
             # Email (consolidated)
             sig_dict = {
