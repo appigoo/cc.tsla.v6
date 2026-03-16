@@ -967,7 +967,7 @@ PARAMS = dict(
     VIX_HIGH=VIX_HIGH_TH, VIX_LOW=VIX_LOW_TH,
 )
 
-selected_tickers = [t.strip().upper() for t in input_tickers.split(",") if t.strip()]
+selected_tickers = [t.strip().upper() for t in (input_tickers or "").split(",") if t.strip()]
 
 # ── Telegram signal selection ─────────────────────────────────────────────────
 ALL_SIGNAL_TYPES = sorted([
