@@ -1015,17 +1015,20 @@ telegram_conditions = st.data_editor(
         "排名":       st.column_config.TextColumn("排名", width="small"),
         "異動標記":   st.column_config.TextColumn("異動標記", width="large"),
         "成交量標記": st.column_config.SelectboxColumn("成交量標記",
-                        options=["放量","縮量","—"], width="small"),
+                        options=["","放量","縮量","—"], width="small"),
         "K線形態":    st.column_config.TextColumn("K線形態", width="medium"),
         "回測勝率":   st.column_config.TextColumn("回測勝率", width="small",
                         help="由回測一鍵加入時自動填入"),
-        "方向":       st.column_config.SelectboxColumn("方向",
-                        options=["做多","做空"], width="small",
-                        help="做多=買入訊號，做空=賣出訊號；一鍵加入時自動帶入"),
+        "方向":       st.column_config.TextColumn("方向", width="small",
+                        help="填入「做多」或「做空」；一鍵加入時自動帶入"),
     },
     use_container_width=True,
 )
-st.session_state["tg_conds"] = telegram_conditions
+# FIX: data_editor 可能回傳 None 值（尤其 SelectboxColumn 空格），統一清理
+_tc = telegram_conditions.copy()
+for _col in _tc.columns:
+    _tc[_col] = _tc[_col].where(_tc[_col].notna(), "").astype(str).str.strip()
+st.session_state["tg_conds"] = _tc
 
 st.title("📊 股票監控儀表板")
 st.caption(f"⏱ 更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
